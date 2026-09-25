@@ -51,6 +51,11 @@ impl Alert {
         Alert(bffi::SSL_AD_HANDSHAKE_FAILURE as u8)
     }
 
+    /// The alert a client sends when the server rejected ECH.
+    pub(crate) fn is_ech_required(&self) -> bool {
+        self.0 as c_int == bffi::SSL_AD_ECH_REQUIRED as c_int
+    }
+
     pub(crate) fn get_description(&self) -> &'static str {
         unsafe {
             CStr::from_ptr(bffi::SSL_alert_desc_string_long(self.0 as c_int))

@@ -37,6 +37,9 @@ pub(crate) struct SessionState {
 
     /// Indicates that early data was rejected in the last call to [Self::read_handshake].
     pub(crate) early_data_rejected: bool,
+    /// Whether the server rejected ECH, the one case in which BoringSSL
+    /// allows asking for its retry configs.
+    ech_rejected: bool,
 
     side: Side,
     alert: Option<TransportError>,
@@ -68,6 +71,7 @@ impl SessionState {
             write_level: Level::Initial,
             levels,
             early_data_rejected: false,
+            ech_rejected: false,
             handshaking: true,
         });
 
@@ -341,6 +345,11 @@ impl SessionState {
     }
 
     fn inject_ech_retry_configs(&self, mut err: TransportError) -> TransportError {
+        // SSL_get0_ech_retry_configs may only be called after the handshake
+        // failed with SSL_R_ECH_REJECTED; otherwise BoringSSL asserts.
+        if !self.ech_rejected {
+            return err;
+        }
         if let Some(configs) = self.ssl.get_ech_retry_configs() {
             let hex_configs = hex::encode(configs);
             err.reason = format!("{} [ECH_RETRY:{}]", err.reason, hex_configs);
@@ -425,6 +434,9 @@ impl SessionState {
     /// Callback from BoringSSL that sends a fatal alert at the specified encryption level.
     #[inline]
     fn on_send_alert(&mut self, _: Level, alert: Alert) -> Result<()> {
+        if alert.is_ech_required() {
+            self.ech_rejected = true;
+        }
         let err: TransportError = alert.into();
         self.alert = Some(self.inject_ech_retry_configs(err));
         Ok(())
