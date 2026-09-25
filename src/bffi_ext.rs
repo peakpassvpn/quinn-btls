@@ -395,7 +395,10 @@ impl QuicSsl for Ssl {
                 label.len(),
                 context.as_ptr(),
                 context.len(),
-                context.is_empty() as _,
+                // QUIC is TLS 1.3 only, where no context and an empty
+                // context are the same (RFC 8446, section 7.5), so the
+                // context is always used.
+                1,
             ))
         }
     }
