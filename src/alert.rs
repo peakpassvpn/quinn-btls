@@ -60,7 +60,7 @@ impl Alert {
         unsafe {
             CStr::from_ptr(bffi::SSL_alert_desc_string_long(self.0 as c_int))
                 .to_str()
-                .unwrap()
+                .unwrap_or("unknown")
         }
     }
 }

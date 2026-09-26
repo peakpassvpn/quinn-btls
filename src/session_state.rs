@@ -504,7 +504,11 @@ impl SessionState {
         let inst = Self::get_instance(ssl);
         let level: Level = level.into();
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
-        let suite = CipherSuite::from_cipher(cipher).unwrap();
+        // A panic must not unwind into BoringSSL: fail the callback, and so the handshake.
+        let suite = match CipherSuite::from_cipher(cipher) {
+            Ok(suite) => suite,
+            Err(_) => return 0,
+        };
         let secret = Secret::from(secret);
         map_cb_result(inst.on_set_read_secret(level, suite, secret))
     }
@@ -519,7 +523,11 @@ impl SessionState {
         let inst = Self::get_instance(ssl);
         let level: Level = level.into();
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
-        let suite = CipherSuite::from_cipher(cipher).unwrap();
+        // A panic must not unwind into BoringSSL: fail the callback, and so the handshake.
+        let suite = match CipherSuite::from_cipher(cipher) {
+            Ok(suite) => suite,
+            Err(_) => return 0,
+        };
         let secret = Secret::from(secret);
         map_cb_result(inst.on_set_write_secret(level, suite, secret))
     }

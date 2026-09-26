@@ -1,4 +1,4 @@
-use crate::error::{br, br_zero_is_success, BoringResult};
+use crate::error::{br, br_zero_is_success, BoringResult, Error, Result};
 use btls::error::ErrorStack;
 use btls::pkey::{HasPrivate, PKey};
 use btls::ssl::{Ssl, SslContext, SslContextRef, SslSession};
@@ -33,11 +33,11 @@ pub trait QuicSslContext {
         cb: Option<unsafe extern "C" fn(ssl: *const bffi::SSL, line: *const c_char)>,
     );
     fn set_certificate(&mut self, cert: X509) -> BoringResult;
-    fn load_certificate_from_pem_file(&mut self, path: &str) -> BoringResult;
+    fn load_certificate_from_pem_file(&mut self, path: &str) -> Result<()>;
     fn add_to_cert_chain(&mut self, cert: X509) -> BoringResult;
-    fn load_cert_chain_from_pem_file(&mut self, path: &str) -> BoringResult;
+    fn load_cert_chain_from_pem_file(&mut self, path: &str) -> Result<()>;
     fn set_private_key<T: HasPrivate>(&mut self, key: PKey<T>) -> BoringResult;
-    fn load_private_key_from_pem_file(&mut self, path: &str) -> BoringResult;
+    fn load_private_key_from_pem_file(&mut self, path: &str) -> Result<()>;
     fn check_private_key(&self) -> BoringResult;
     fn cert_store_mut(&mut self) -> &mut X509StoreBuilderRef;
 
@@ -132,14 +132,15 @@ impl QuicSslContext for SslContext {
         }
     }
 
-    fn load_certificate_from_pem_file(&mut self, path: &str) -> BoringResult {
-        let path = ffi::CString::new(path).unwrap();
+    fn load_certificate_from_pem_file(&mut self, path: &str) -> Result<()> {
+        let path = ffi::CString::new(path)
+            .map_err(|_| Error::invalid_input(format!("path contains a NUL byte: {path:?}")))?;
         unsafe {
-            br(bffi::SSL_CTX_use_certificate_file(
+            Ok(br(bffi::SSL_CTX_use_certificate_file(
                 self.as_ptr(),
                 path.as_ptr(),
                 bffi::SSL_FILETYPE_PEM,
-            ))
+            ))?)
         }
     }
 
@@ -151,13 +152,14 @@ impl QuicSslContext for SslContext {
         }
     }
 
-    fn load_cert_chain_from_pem_file(&mut self, path: &str) -> BoringResult {
-        let path = ffi::CString::new(path).unwrap();
+    fn load_cert_chain_from_pem_file(&mut self, path: &str) -> Result<()> {
+        let path = ffi::CString::new(path)
+            .map_err(|_| Error::invalid_input(format!("path contains a NUL byte: {path:?}")))?;
         unsafe {
-            br(bffi::SSL_CTX_use_certificate_chain_file(
+            Ok(br(bffi::SSL_CTX_use_certificate_chain_file(
                 self.as_ptr(),
                 path.as_ptr(),
-            ))
+            ))?)
         }
     }
 
@@ -169,15 +171,16 @@ impl QuicSslContext for SslContext {
         }
     }
 
-    fn load_private_key_from_pem_file(&mut self, path: &str) -> BoringResult {
-        let path = ffi::CString::new(path).unwrap();
+    fn load_private_key_from_pem_file(&mut self, path: &str) -> Result<()> {
+        let path = ffi::CString::new(path)
+            .map_err(|_| Error::invalid_input(format!("path contains a NUL byte: {path:?}")))?;
 
         unsafe {
-            br(bffi::SSL_CTX_use_PrivateKey_file(
+            Ok(br(bffi::SSL_CTX_use_PrivateKey_file(
                 self.as_ptr(),
                 path.as_ptr(),
                 bffi::SSL_FILETYPE_PEM,
-            ))
+            ))?)
         }
     }
 
@@ -280,6 +283,15 @@ pub trait QuicSsl {
     fn set_quic_use_legacy_codepoint(&mut self, use_legacy: bool);
 }
 
+/// Parses a server name that is an IP literal, bracketed or not (`::1` or `[::1]`).
+pub(crate) fn parse_ip(server_name: &str) -> Option<std::net::IpAddr> {
+    let name = server_name
+        .strip_prefix('[')
+        .and_then(|name| name.strip_suffix(']'))
+        .unwrap_or(server_name);
+    name.parse().ok()
+}
+
 impl QuicSsl for Ssl {
     fn set_connect_state(&mut self) {
         unsafe { bffi::SSL_set_connect_state(self.as_ptr()) }
@@ -293,7 +305,7 @@ impl QuicSsl for Ssl {
         unsafe {
             CStr::from_ptr(bffi::SSL_state_string_long(self.as_ptr()))
                 .to_str()
-                .unwrap()
+                .unwrap_or("unknown")
         }
     }
 
@@ -372,9 +384,9 @@ impl QuicSsl for Ssl {
     fn set_verify_hostname(&mut self, domain: &str) -> BoringResult {
         let param = self.param_mut();
         param.set_hostflags(btls::x509::verify::X509CheckFlags::NO_PARTIAL_WILDCARDS);
-        match domain.parse() {
-            Ok(ip) => param.set_ip(ip)?,
-            Err(_) => param.set_host(domain)?,
+        match parse_ip(domain) {
+            Some(ip) => param.set_ip(ip)?,
+            None => param.set_host(domain)?,
         }
         Ok(())
     }
@@ -435,7 +447,9 @@ impl QuicSsl for Ssl {
         unsafe {
             bffi::SSL_early_data_reason_string(reason)
                 .as_ref()
-                .map_or("unknown", |reason| CStr::from_ptr(reason).to_str().unwrap())
+                .map_or("unknown", |reason| {
+                    CStr::from_ptr(reason).to_str().unwrap_or("unknown")
+                })
         }
     }
 
@@ -554,9 +568,11 @@ impl SslError {
     #[inline]
     pub fn get_description(&self) -> &'static str {
         unsafe {
-            CStr::from_ptr(bffi::SSL_error_description(self.0))
-                .to_str()
-                .unwrap()
+            bffi::SSL_error_description(self.0)
+                .as_ref()
+                .map_or("unknown", |desc| {
+                    CStr::from_ptr(desc).to_str().unwrap_or("unknown")
+                })
         }
     }
 }
@@ -564,5 +580,21 @@ impl SslError {
 impl Display for SslError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "SSL_ERROR[{}]: {}", self.0, self.get_description())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::parse_ip;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn parse_ip_literals() {
+        assert_eq!(parse_ip("127.0.0.1"), Some(Ipv4Addr::LOCALHOST.into()));
+        assert_eq!(parse_ip("::1"), Some(Ipv6Addr::LOCALHOST.into()));
+        assert_eq!(parse_ip("[::1]"), Some(Ipv6Addr::LOCALHOST.into()));
+        assert_eq!(parse_ip("example.com"), None);
+        assert_eq!(parse_ip("1.2.3.4.example"), None);
+        assert_eq!(parse_ip("[example.com]"), None);
     }
 }

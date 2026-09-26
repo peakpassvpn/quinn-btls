@@ -11,6 +11,7 @@ use bytes::{Bytes, BytesMut};
 use foreign_types_shared::ForeignType;
 use quinn_proto::{
     crypto, transport_parameters::TransportParameters, ConnectionId, Side, TransportError,
+    TransportErrorCode,
 };
 use std::any::Any;
 use std::ffi::{c_int, c_uint, c_void};
@@ -18,6 +19,7 @@ use std::result::Result as StdResult;
 use std::slice;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use tracing::warn;
 
 /// Configuration for a server-side QUIC. Wraps around a BoringSSL [SslContext].
 pub struct Config {
@@ -117,8 +119,104 @@ impl crypto::ServerConfig for Config {
         version: u32,
         params: &TransportParameters,
     ) -> Box<dyn crypto::Session> {
-        let version = QuicVersion::parse(version).unwrap();
-        Session::new(self, version, params).unwrap()
+        // quinn only starts a session for a version `initial_keys` accepted, so parsing
+        // cannot fail here; if it does, fail the connection rather than the process.
+        let version = match QuicVersion::parse(version) {
+            Ok(version) => version,
+            Err(_) => {
+                return Box::new(FailedSession::new(
+                    QuicVersion::V1,
+                    format!("unsupported QUIC version: {version:#x}"),
+                ))
+            }
+        };
+        match Session::new(self, version, params) {
+            Ok(session) => session,
+            Err(e) => Box::new(FailedSession::new(
+                version,
+                format!("failed starting TLS session: {e}"),
+            )),
+        }
+    }
+}
+
+/// The session handed to quinn when BoringSSL could not start one: [crypto::ServerConfig]
+/// has no way to return an error, so the failure surfaces as a [TransportError] when quinn
+/// feeds the session the client's first handshake bytes, which closes that connection only.
+struct FailedSession {
+    version: QuicVersion,
+    reason: String,
+}
+
+impl FailedSession {
+    fn new(version: QuicVersion, reason: String) -> Self {
+        warn!("{reason}");
+        Self { version, reason }
+    }
+
+    fn error(&self) -> TransportError {
+        TransportError {
+            code: TransportErrorCode::INTERNAL_ERROR,
+            frame: None,
+            reason: self.reason.clone(),
+        }
+    }
+}
+
+impl crypto::Session for FailedSession {
+    fn initial_keys(&self, dcid: &ConnectionId, side: Side) -> crypto::Keys {
+        // Initial keys derive from public constants and the connection ID alone.
+        let secrets = Secrets::initial(self.version, dcid, side).unwrap();
+        secrets.keys().unwrap().as_crypto().unwrap()
+    }
+
+    fn handshake_data(&self) -> Option<Box<dyn Any>> {
+        None
+    }
+
+    fn peer_identity(&self) -> Option<Box<dyn Any>> {
+        None
+    }
+
+    fn early_crypto(&self) -> Option<(Box<dyn crypto::HeaderKey>, Box<dyn crypto::PacketKey>)> {
+        None
+    }
+
+    fn early_data_accepted(&self) -> Option<bool> {
+        None
+    }
+
+    fn is_handshaking(&self) -> bool {
+        true
+    }
+
+    fn read_handshake(&mut self, _: &[u8]) -> StdResult<bool, TransportError> {
+        Err(self.error())
+    }
+
+    fn transport_parameters(&self) -> StdResult<Option<TransportParameters>, TransportError> {
+        Err(self.error())
+    }
+
+    fn write_handshake(&mut self, _: &mut Vec<u8>) -> Option<crypto::Keys> {
+        None
+    }
+
+    fn next_1rtt_keys(&mut self) -> Option<crypto::KeyPair<Box<dyn crypto::PacketKey>>> {
+        None
+    }
+
+    fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool {
+        retry::is_valid_retry(&self.version, orig_dst_cid, header, payload)
+    }
+
+    fn export_keying_material(
+        &self,
+        _: &mut [u8],
+        _: &[u8],
+        _: &[u8],
+    ) -> StdResult<(), crypto::ExportKeyingMaterialError> {
+        Err(crypto::ExportKeyingMaterialError)
     }
 }
 
@@ -140,7 +238,7 @@ impl Session {
         version: QuicVersion,
         params: &TransportParameters,
     ) -> Result<Box<Self>> {
-        let mut ssl = Ssl::new(&cfg.ctx).unwrap();
+        let mut ssl = Ssl::new(&cfg.ctx)?;
 
         // Configure the TLS extension based on the QUIC version used.
         ssl.set_quic_use_legacy_codepoint(version.uses_legacy_extension());
@@ -149,11 +247,11 @@ impl Session {
         ssl.set_accept_state();
 
         // Set the transport parameters.
-        ssl.set_quic_transport_params(&encode_params(params))
-            .unwrap();
+        ssl.set_quic_transport_params(&encode_params(params))?;
 
-        // Need to se
-        ssl.set_quic_early_data_context(b"quinn-boring").unwrap();
+        // 0-RTT requires an early data context: tickets issued under another context are
+        // not accepted for early data.
+        ssl.set_quic_early_data_context(b"quinn-boring")?;
 
         let mut session = Box::new(Self {
             state: SessionState::new(ssl, Side::Server, version)?,

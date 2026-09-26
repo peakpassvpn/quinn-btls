@@ -1,5 +1,5 @@
 use crate::alpn::AlpnProtocols;
-use crate::bffi_ext::QuicSslContext;
+use crate::bffi_ext::{parse_ip, QuicSslContext};
 use crate::error::{map_result, Result};
 use crate::session_state::{SessionState, QUIC_METHOD};
 use crate::version::QuicVersion;
@@ -113,10 +113,9 @@ impl crypto::ClientConfig for Config {
         server_name: &str,
         params: &TransportParameters,
     ) -> StdResult<Box<dyn crypto::Session>, ConnectError> {
-        let version = QuicVersion::parse(version).unwrap();
+        let version = QuicVersion::parse(version).map_err(|_| ConnectError::UnsupportedVersion)?;
 
-        Ok(Session::new(self, version, server_name, params)
-            .map_err(|_| ConnectError::EndpointStopping)?)
+        Ok(Session::new(self, version, server_name, params)?)
     }
 }
 
@@ -142,7 +141,7 @@ impl Session {
         params: &TransportParameters,
     ) -> Result<Box<Self>> {
         let session_cache = cfg.session_cache.clone();
-        let mut ssl = Ssl::new(&cfg.ctx).unwrap();
+        let mut ssl = Ssl::new(&cfg.ctx)?;
 
         // Configure the TLS extension based on the QUIC version used.
         ssl.set_quic_use_legacy_codepoint(version.uses_legacy_extension());
@@ -154,10 +153,12 @@ impl Session {
         ssl.set_verify_hostname(server_name)
             .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?;
 
-        // Set the SNI hostname.
-        // TODO: should we validate the hostname?
-        ssl.set_hostname(server_name)
-            .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?;
+        // Set the SNI hostname. RFC 6066 section 3 forbids IP literals in SNI, so an IP
+        // server name is only used to verify the certificate's IP SANs above.
+        if parse_ip(server_name).is_none() {
+            ssl.set_hostname(server_name)
+                .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?;
+        }
 
         // Set the transport parameters.
         ssl.set_quic_transport_params(&encode_params(params))
