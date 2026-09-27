@@ -162,9 +162,16 @@ impl SessionState {
 
     #[inline]
     pub(crate) fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<crypto::Keys> {
-        // Write all available data at the current write level.
+        // Write all available data at the current write level. Data at the
+        // application level (the server's NewSessionTicket) waits until the
+        // 1-RTT keys have been handed to quinn: until then quinn is still in
+        // the Handshake space, would send it there, and then drop it with
+        // the Handshake keys, so the client never gets a ticket and never
+        // resumes with 0-RTT.
+        let app_keys_pending =
+            self.write_level == Level::Application && self.next_secrets.is_none();
         let write_state = self.level_state_mut(self.write_level);
-        if write_state.write_buffer.has_remaining() {
+        if !app_keys_pending && write_state.write_buffer.has_remaining() {
             buf.extend_from_slice(&write_state.write_buffer);
             write_state.write_buffer.clear();
         }
