@@ -29,7 +29,7 @@ btls = "0.5.5"
 btls-sys = "0.5.5"
 bytes = "1"
 foreign-types-shared = "0.3"
-lru = "0.16"
+lru = "0.18.2"
 quinn = { version = "0.11.9", default-features = false }
 quinn-proto = { version = "0.11.13", default-features = false }
 rand = "0.10.0"
