@@ -21,9 +21,14 @@ use std::sync::LazyLock;
 use tracing::{trace, warn};
 
 /// Configuration for a client-side QUIC. Wraps around a BoringSSL [SslContext].
+///
+/// A clone shares the [SslContext] and the [SessionCache] with the original: what
+/// [Config::ctx_mut] changes on one, it changes on both. Its ECH configs are its own.
+#[derive(Clone)]
 pub struct Config {
     ctx: SslContext,
     session_cache: Arc<dyn SessionCache>,
+    ech_config_list: Option<Bytes>,
 }
 
 impl Config {
@@ -61,6 +66,7 @@ impl Config {
         Ok(Self {
             ctx,
             session_cache: Arc::new(SimpleCache::new(256)),
+            ech_config_list: None,
         })
     }
 
@@ -94,6 +100,19 @@ impl Config {
     /// Sets the [SessionCache] to be shared by all created client sessions.
     pub fn set_session_cache(&mut self, session_cache: Arc<dyn SessionCache>) {
         self.session_cache = session_cache;
+    }
+
+    /// Sets the serialized ECHConfigList that the sessions offer ECH with, or none to offer
+    /// none. A list BoringSSL cannot take is an error here, not when a session starts.
+    ///
+    /// If the server rejects ECH, the handshake fails: the ECHConfigList the server sent to
+    /// retry with, if any, is in the error's reason as `[ECH_RETRY:<hex>]`.
+    pub fn set_ech_config_list(&mut self, ech_config_list: Option<&[u8]>) -> Result<()> {
+        if let Some(list) = ech_config_list {
+            Ssl::new(&self.ctx)?.set_ech_config_list(list)?;
+        }
+        self.ech_config_list = ech_config_list.map(Bytes::copy_from_slice);
+        Ok(())
     }
 
     /// Sets the ALPN protocols supported by the client. QUIC requires that
@@ -158,6 +177,13 @@ impl Session {
         if parse_ip(server_name).is_none() {
             ssl.set_hostname(server_name)
                 .map_err(|_| ConnectError::InvalidServerName(server_name.into()))?;
+        }
+
+        // Offer ECH: the ClientHello above becomes the inner one, encrypted in an outer one
+        // that names the ECHConfig's public name.
+        if let Some(list) = &cfg.ech_config_list {
+            ssl.set_ech_config_list(list)
+                .map_err(|_| ConnectError::EndpointStopping)?;
         }
 
         // Set the transport parameters.

@@ -27,12 +27,19 @@ never force-pushed: a pinned revision has to stay reachable.
   Handshake space and lost with those keys, so clients never resumed and
   0-RTT never happened against a quinn-btls server. Application data now
   waits for the 1-RTT keys.
+- **ECH config list**: `ClientConfig::set_ech_config_list` sets the
+  ECHConfigList each session offers ECH with (`SSL_set1_ech_config_list`
+  on each SSL, before the ClientHello); a list BoringSSL cannot parse is an
+  error when it is set. `ClientConfig` is `Clone`, sharing the context and
+  the session cache, so that a client can offer a list per connection, as
+  one looked up in DNS. `HandshakeData::ech_accepted` says whether the
+  handshake was the encrypted ClientHello's, on both sides.
 - **lru 0.18**: past RUSTSEC-2026-0253 (`LruCache::pop` not panic-safe).
   The session cache's keys are `Bytes`, whose drop cannot panic, so the
   flaw was not reachable; the advisory is closed all the same.
 
 ## When it could go away
 
-All five are bug fixes rather than sail-specific features: once upstream
-has equivalents of them, sail can depend on upstream directly. None are
-there today.
+Five are bug fixes and one, the ECH config list, a feature rather than
+anything sail-specific: once upstream has equivalents of them, sail can
+depend on upstream directly. None are there today.

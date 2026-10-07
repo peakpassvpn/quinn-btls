@@ -122,6 +122,7 @@ impl SessionState {
             Some(Box::new(HandshakeData {
                 protocol: alpn_protocol,
                 server_name: sni_name,
+                ech_accepted: self.ssl.ech_accepted(),
             }))
         }
     }

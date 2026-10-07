@@ -40,6 +40,10 @@ pub struct HandshakeData {
     ///
     /// Always `None` for outgoing connections
     pub server_name: Option<String>,
+
+    /// Whether the handshake is the one of the client's encrypted ClientHello, which the
+    /// server decrypted with its ECH keys. Always `false` without ECH.
+    pub ech_accepted: bool,
 }
 
 pub mod helpers {
