@@ -1,11 +1,14 @@
 # This fork
 
 sail's fork of [0x676e67/quinn-btls](https://github.com/0x676e67/quinn-btls),
-the BoringSSL (btls) crypto provider for quinn. The `sail` branch tracks
-upstream `main`, and sail pins revisions of it.
+the BoringSSL (btls) crypto provider for quinn. sail pins revisions of the
+`sail` branch; `main` is kept the same as `sail`.
 
-Upstream is merged into `sail`, never rebased onto it, and the branch is
-never force-pushed: a pinned revision has to stay reachable.
+Upstream is archived (its last push was on 2026-04-15), so
+there is nothing more to merge and no pull request can be offered there.
+Its own upstream, quinn-rs/quinn-boring, is built on the `boring` crate,
+not btls. The branch is never rebased or force-pushed: a pinned revision
+has to stay reachable.
 
 ## Patches
 
@@ -40,6 +43,8 @@ never force-pushed: a pinned revision has to stay reachable.
 
 ## When it could go away
 
-Five are bug fixes and one, the ECH config list, a feature rather than
-anything sail-specific: once upstream has equivalents of them, sail can
-depend on upstream directly. None are there today.
+Not while upstream is archived: this fork is where quinn-btls is
+maintained for sail. Five of the patches are bug fixes and one, the ECH
+config list, a feature, none of them specific to sail; if upstream comes
+back, or a maintained successor has equivalents of them, sail can depend
+on that instead.
