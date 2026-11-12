@@ -9,7 +9,6 @@ use quinn_proto::crypto;
 use std::ffi::c_uint;
 use std::fmt::{Debug, Formatter};
 use std::mem;
-use std::mem::MaybeUninit;
 use std::result::Result as StdResult;
 
 const SAMPLE_LEN: usize = 16; // 128-bits.
@@ -213,18 +212,20 @@ struct AesHeaderKey(bffi::AES_KEY);
 
 impl AesHeaderKey {
     fn new(key: &Key) -> Result<AesHeaderKey> {
-        let hpk = unsafe {
-            let mut hpk = MaybeUninit::uninit();
-
+        // AES-128 fills only 44 of the 60 words in rd_key. The remaining
+        // integer fields must still be initialized before holding an AES_KEY.
+        let mut hpk = bffi::AES_KEY {
+            rd_key: [0; 60],
+            rounds: 0,
+        };
+        unsafe {
             // NOTE: this function breaks the usual return value convention.
             map_result_zero_is_success(bffi::AES_set_encrypt_key(
                 key.as_ptr(),
                 (key.len() * 8) as c_uint,
-                hpk.as_mut_ptr(),
+                &mut hpk,
             ))?;
-
-            hpk.assume_init()
-        };
+        }
         Ok(Self(hpk))
     }
 }
@@ -525,5 +526,40 @@ impl crypto::AeadKey for AeadKey {
     ) -> StdResult<&'a mut [u8], crypto::CryptoError> {
         let plain_len = self.open_in_place(&self.suite.aead.zero_nonce(), data, additional_data)?;
         Ok(&mut data[..plain_len])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_literal::hex;
+
+    #[test]
+    fn aes_header_masks() {
+        // FIPS 197 Appendix C: header protection takes the first five bytes
+        // of AES-ECB(sample), for both AES suites supported by QUIC.
+        let sample = hex!("00112233445566778899aabbccddeeff");
+        for (key, expected) in [
+            (
+                Key::from(&hex!("000102030405060708090a0b0c0d0e0f")),
+                hex!("69c4e0d86a"),
+            ),
+            (
+                Key::from(&hex!(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+                )),
+                hex!("8ea2b7ca51"),
+            ),
+        ] {
+            let key = AesHeaderKey::new(&key).unwrap();
+            assert_eq!(key.new_mask(&sample).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn aes_header_rejects_invalid_key_lengths() {
+        for len in [0, 15, 17, 23, 25, 31] {
+            assert!(AesHeaderKey::new(&Key::with_len(len)).is_err());
+        }
     }
 }
