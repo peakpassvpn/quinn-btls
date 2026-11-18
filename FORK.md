@@ -41,10 +41,15 @@ has to stay reachable.
   The session cache's keys are `Bytes`, whose drop cannot panic, so the
   flaw was not reachable; the advisory is closed all the same.
 
+- **AES header keys**: initialize the whole native key schedule before
+  using it as a Rust value. AES-128 writes only part of the schedule;
+  the unused words must still be initialized. This provider calls the
+  native API directly, so a fix in btls's AES wrapper alone is insufficient.
+
 ## When it could go away
 
 Not while upstream is archived: this fork is where quinn-btls is
-maintained for sail. Five of the patches are bug fixes and one, the ECH
-config list, a feature, none of them specific to sail; if upstream comes
+maintained for sail. The patches are bug fixes except for the ECH
+config list feature, none of them specific to sail; if upstream comes
 back, or a maintained successor has equivalents of them, sail can depend
 on that instead.
